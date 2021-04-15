@@ -157,11 +157,11 @@ static uint16_t
 
 #ifdef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
     using namespace xyz::openbmc_project::Logging::SEL;
-    auto entryID = report<SELCreated>(
+    report<SELCreated>(
         Created::RECORD_TYPE(selSystemType), Created::GENERATOR_ID(genId),
         Created::SENSOR_DATA(selDataStr.c_str()), Created::EVENT_DIR(assert),
         Created::SENSOR_PATH(path.c_str()));
-    return static_cast<uint16_t>(entryID);
+    return 0;
 #else
     unsigned int recordId = getNewRecordId();
     sd_journal_send("MESSAGE=%s", message.c_str(), "PRIORITY=%i", selPriority,
@@ -189,11 +189,11 @@ static uint16_t selAddOemRecord(const std::string& message,
 
 #ifdef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
     using namespace xyz::openbmc_project::Logging::SEL;
-    auto entryID = report<SELCreated>(
-        Created::RECORD_TYPE(recordType), Created::GENERATOR_ID(0),
-        Created::SENSOR_DATA(selDataStr.c_str()), Created::EVENT_DIR(0),
-        Created::SENSOR_PATH(""));
-    return static_cast<uint16_t>(entryID);
+    report<SELCreated>(Created::RECORD_TYPE(recordType),
+                       Created::GENERATOR_ID(0),
+                       Created::SENSOR_DATA(selDataStr.c_str()),
+                       Created::EVENT_DIR(0), Created::SENSOR_PATH(""));
+    return 0;
 #else
     unsigned int recordId = getNewRecordId();
     sd_journal_send("MESSAGE=%s", message.c_str(), "PRIORITY=%i", selPriority,
