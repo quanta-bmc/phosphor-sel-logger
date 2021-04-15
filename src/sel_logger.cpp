@@ -31,17 +31,6 @@
 #include <iostream>
 #include <sstream>
 
-#ifdef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
-#include <phosphor-logging/elog-errors.hpp>
-#include <phosphor-logging/elog.hpp>
-#include <phosphor-logging/log.hpp>
-#include <xyz/openbmc_project/Logging/SEL/error.hpp>
-
-using namespace phosphor::logging;
-using SELCreated =
-    sdbusplus::xyz::openbmc_project::Logging::SEL::Error::Created;
-#endif
-
 struct DBusInternalError final : public sdbusplus::exception_t
 {
     const char* name() const noexcept override
@@ -59,7 +48,6 @@ struct DBusInternalError final : public sdbusplus::exception_t
     };
 };
 
-#ifndef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
 static bool getSELLogFiles(std::vector<std::filesystem::path>& selLogFiles)
 {
     // Loop through the directory looking for ipmi_sel log files
@@ -128,7 +116,6 @@ static unsigned int getNewRecordId(void)
     }
     return recordId;
 }
-#endif
 
 static void toHexStr(const std::vector<uint8_t>& data, std::string& hexStr)
 {
@@ -155,14 +142,6 @@ static uint16_t
     std::string selDataStr;
     toHexStr(selData, selDataStr);
 
-#ifdef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
-    using namespace xyz::openbmc_project::Logging::SEL;
-    report<SELCreated>(
-        Created::RECORD_TYPE(selSystemType), Created::GENERATOR_ID(genId),
-        Created::SENSOR_DATA(selDataStr.c_str()), Created::EVENT_DIR(assert),
-        Created::SENSOR_PATH(path.c_str()));
-    return 0;
-#else
     unsigned int recordId = getNewRecordId();
     sd_journal_send("MESSAGE=%s", message.c_str(), "PRIORITY=%i", selPriority,
                     "MESSAGE_ID=%s", selMessageId, "IPMI_SEL_RECORD_ID=%d",
@@ -172,7 +151,6 @@ static uint16_t
                     "IPMI_SEL_EVENT_DIR=%x", assert, "IPMI_SEL_DATA=%s",
                     selDataStr.c_str(), std::forward<T>(metadata)..., NULL);
     return recordId;
-#endif
 }
 
 static uint16_t selAddOemRecord(const std::string& message,
@@ -187,21 +165,12 @@ static uint16_t selAddOemRecord(const std::string& message,
     std::string selDataStr;
     toHexStr(selData, selDataStr);
 
-#ifdef SEL_LOGGER_SEND_TO_LOGGING_SERVICE
-    using namespace xyz::openbmc_project::Logging::SEL;
-    report<SELCreated>(Created::RECORD_TYPE(recordType),
-                       Created::GENERATOR_ID(0),
-                       Created::SENSOR_DATA(selDataStr.c_str()),
-                       Created::EVENT_DIR(0), Created::SENSOR_PATH(""));
-    return 0;
-#else
     unsigned int recordId = getNewRecordId();
     sd_journal_send("MESSAGE=%s", message.c_str(), "PRIORITY=%i", selPriority,
                     "MESSAGE_ID=%s", selMessageId, "IPMI_SEL_RECORD_ID=%d",
                     recordId, "IPMI_SEL_RECORD_TYPE=%x", recordType,
                     "IPMI_SEL_DATA=%s", selDataStr.c_str(), NULL);
     return recordId;
-#endif
 }
 
 int main(int argc, char* argv[])
