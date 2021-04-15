@@ -204,8 +204,8 @@ int main(int argc, char* argv[])
     ifaceAddSel->initialize();
 
 #ifdef SEL_LOGGER_MONITOR_THRESHOLD_EVENTS
-    sdbusplus::bus::match::match thresholdAssertMonitor =
-        startThresholdAssertMonitor(conn);
+    sdbusplus::bus::match::match thresholdEventMonitor =
+        startThresholdEventMonitor(conn);
 #endif
 
 #ifdef REDFISH_LOG_MONITOR_PULSE_EVENTS
