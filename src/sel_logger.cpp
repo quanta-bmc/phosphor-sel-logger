@@ -15,77 +15,100 @@
 */
 #include <systemd/sd-journal.h>
 
+#include <boost/algorithm/string.hpp>
+#include <boost/asio/io_service.hpp>
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
-#include <experimental/string_view>
-#include <iomanip>
-#include <iostream>
+#include <pulse_event_monitor.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 #include <sel_logger.hpp>
-#include <sstream>
 #include <threshold_event_monitor.hpp>
 #include <watchdog_event_monitor.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+
 struct DBusInternalError final : public sdbusplus::exception_t
 {
-    const char *name() const noexcept override
+    const char* name() const noexcept override
     {
         return "org.freedesktop.DBus.Error.Failed";
     };
-    const char *description() const noexcept override
+    const char* description() const noexcept override
     {
         return "internal error";
     };
-    const char *what() const noexcept override
+    const char* what() const noexcept override
     {
         return "org.freedesktop.DBus.Error.Failed: "
                "internal error";
     };
 };
 
+static bool getSELLogFiles(std::vector<std::filesystem::path>& selLogFiles)
+{
+    // Loop through the directory looking for ipmi_sel log files
+    for (const std::filesystem::directory_entry& dirEnt :
+         std::filesystem::directory_iterator(selLogDir))
+    {
+        std::string filename = dirEnt.path().filename();
+        if (boost::starts_with(filename, selLogFilename))
+        {
+            // If we find an ipmi_sel log file, save the path
+            selLogFiles.emplace_back(selLogDir / filename);
+        }
+    }
+    // As the log files rotate, they are appended with a ".#" that is higher for
+    // the older logs. Since we don't expect more than 10 log files, we
+    // can just sort the list to get them in order from newest to oldest
+    std::sort(selLogFiles.begin(), selLogFiles.end());
+
+    return !selLogFiles.empty();
+}
+
 static unsigned int initializeRecordId(void)
 {
-    int journalError = -1;
-    sd_journal *journal;
-    journalError = sd_journal_open(&journal, SD_JOURNAL_LOCAL_ONLY);
-    if (journalError < 0)
+    std::vector<std::filesystem::path> selLogFiles;
+    if (!getSELLogFiles(selLogFiles))
     {
-        std::cerr << "Failed to open journal: " << strerror(-journalError)
-                  << "\n";
-        throw DBusInternalError();
+        return selInvalidRecID;
     }
-    unsigned int recordId = selInvalidRecID;
-    char match[256] = {};
-    snprintf(match, sizeof(match), "MESSAGE_ID=%s", selMessageId);
-    sd_journal_add_match(journal, match, 0);
-    SD_JOURNAL_FOREACH_BACKWARDS(journal)
+    std::ifstream logStream(selLogFiles.front());
+    if (!logStream.is_open())
     {
-        const char *data = nullptr;
-        size_t length;
+        return selInvalidRecID;
+    }
+    std::string line;
+    std::string newestEntry;
+    while (std::getline(logStream, line))
+    {
+        newestEntry = line;
+    }
 
-        journalError = sd_journal_get_data(journal, "IPMI_SEL_RECORD_ID",
-                                           (const void **)&data, &length);
-        if (journalError < 0)
-        {
-            std::cerr << "Failed to read IPMI_SEL_RECORD_ID field: "
-                      << strerror(-journalError) << "\n";
-            continue;
-        }
-        if (journalError =
-                sscanf(data, "IPMI_SEL_RECORD_ID=%u", &recordId) != 1)
-        {
-            std::cerr << "Failed to parse record ID: " << journalError << "\n";
-            throw DBusInternalError();
-        }
-        break;
+    std::vector<std::string> newestEntryFields;
+    boost::split(newestEntryFields, newestEntry, boost::is_any_of(" ,"),
+                 boost::token_compress_on);
+    if (newestEntryFields.size() < 4)
+    {
+        return selInvalidRecID;
     }
-    sd_journal_close(journal);
-    return recordId;
+
+    return std::stoul(newestEntryFields[1]);
 }
 
 static unsigned int getNewRecordId(void)
 {
     static unsigned int recordId = initializeRecordId();
+
+    // If the log has been cleared, also clear the current ID
+    std::vector<std::filesystem::path> selLogFiles;
+    if (!getSELLogFiles(selLogFiles))
+    {
+        recordId = selInvalidRecID;
+    }
 
     if (++recordId >= selInvalidRecID)
     {
@@ -94,11 +117,11 @@ static unsigned int getNewRecordId(void)
     return recordId;
 }
 
-static void toHexStr(const std::vector<uint8_t> &data, std::string &hexStr)
+static void toHexStr(const std::vector<uint8_t>& data, std::string& hexStr)
 {
     std::stringstream stream;
     stream << std::hex << std::uppercase << std::setfill('0');
-    for (const int &v : data)
+    for (const int& v : data)
     {
         stream << std::setw(2) << v;
     }
@@ -107,9 +130,9 @@ static void toHexStr(const std::vector<uint8_t> &data, std::string &hexStr)
 
 template <typename... T>
 static uint16_t
-    selAddSystemRecord(const std::string &message, const std::string &path,
-                       const std::vector<uint8_t> &selData, const bool &assert,
-                       const uint16_t &genId, T &&... metadata)
+    selAddSystemRecord(const std::string& message, const std::string& path,
+                       const std::vector<uint8_t>& selData, const bool& assert,
+                       const uint16_t& genId, T&&... metadata)
 {
     // Only 3 bytes of SEL event data are allowed in a system record
     if (selData.size() > selEvtDataMaxSize)
@@ -130,9 +153,9 @@ static uint16_t
     return recordId;
 }
 
-static uint16_t selAddOemRecord(const std::string &message,
-                                const std::vector<uint8_t> &selData,
-                                const uint8_t &recordType)
+static uint16_t selAddOemRecord(const std::string& message,
+                                const std::vector<uint8_t>& selData,
+                                const uint8_t& recordType)
 {
     // A maximum of 13 bytes of SEL event data are allowed in an OEM record
     if (selData.size() > selOemDataMaxSize)
@@ -150,7 +173,7 @@ static uint16_t selAddOemRecord(const std::string &message,
     return recordId;
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     // setup connection to dbus
     boost::asio::io_service io;
@@ -166,16 +189,16 @@ int main(int argc, char *argv[])
 
     // Add a new SEL entry
     ifaceAddSel->register_method(
-        "IpmiSelAdd", [](const std::string &message, const std::string &path,
-                         const std::vector<uint8_t> &selData,
-                         const bool &assert, const uint16_t &genId) {
+        "IpmiSelAdd", [](const std::string& message, const std::string& path,
+                         const std::vector<uint8_t>& selData,
+                         const bool& assert, const uint16_t& genId) {
             return selAddSystemRecord(message, path, selData, assert, genId);
         });
     // Add a new OEM SEL entry
     ifaceAddSel->register_method(
         "IpmiSelAddOem",
-        [](const std::string &message, const std::vector<uint8_t> &selData,
-           const uint8_t &recordType) {
+        [](const std::string& message, const std::vector<uint8_t>& selData,
+           const uint8_t& recordType) {
             return selAddOemRecord(message, selData, recordType);
         });
     ifaceAddSel->initialize();
@@ -183,6 +206,11 @@ int main(int argc, char *argv[])
 #ifdef SEL_LOGGER_MONITOR_THRESHOLD_EVENTS
     sdbusplus::bus::match::match thresholdEventMonitor =
         startThresholdEventMonitor(conn);
+#endif
+
+#ifdef REDFISH_LOG_MONITOR_PULSE_EVENTS
+    sdbusplus::bus::match::match pulseEventMonitor =
+        startPulseEventMonitor(conn);
 #endif
 
 #ifdef SEL_LOGGER_MONITOR_WATCHDOG_EVENTS
